@@ -10,6 +10,9 @@ import requests
 import base64
 import glob
 
+# Gemini API Key အစစ်
+GEMINI_KEY = "AIzaSyALlot4FzykPAXmCLmAgKOUHp0HmyklT2s"
+
 app = FastAPI()
 
 app.add_middleware(
@@ -42,7 +45,6 @@ HTML_CONTENT = """
         .btn { width: 100%; padding: 16px; background: #2563eb; color: #fff; border: none; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; }
         .btn:disabled { background: #475569; cursor: not-allowed; }
         #status { margin-top: 15px; font-size: 13px; text-align: center; color: #38bdf8; line-height: 1.5; }
-        #script-preview { margin-top: 15px; padding: 12px; background: #0f172a; border-radius: 10px; font-size: 12px; color: #cbd5e1; display: none; border-left: 4px solid #38bdf8; max-height: 140px; overflow-y: auto; text-align: left; }
         #result-area { margin-top: 20px; display: none; text-align: center; }
         video { width: 100%; border-radius: 12px; margin-top: 10px; max-height: 280px; background: #000; }
         .btn-down { background: #10b981; margin-top: 12px; text-decoration: none; display: inline-block; padding: 14px; border-radius: 10px; color: #fff; font-weight: bold; width: 100%; }
@@ -54,7 +56,7 @@ HTML_CONTENT = """
             <div class="icon">🎬</div>
             <div>
                 <h1>AI Video Story Recap</h1>
-                <p class="sub">Vision Frame Analysis & Burmese Narration</p>
+                <p class="sub">Gemini Vision Analysis & Burmese Narration</p>
             </div>
         </div>
 
@@ -74,12 +76,11 @@ HTML_CONTENT = """
         <button id="submitBtn" class="btn" onclick="processVideo()">🚀 AI ANALYZE & RECAP</button>
 
         <div id="status"></div>
-        <div id="script-preview"></div>
 
         <div id="result-area">
             <h3 style="font-size: 14px; color: #4ade80;">✅ Full Recap Video Ready!</h3>
             <video id="previewPlayer" controls playsinline></video>
-            <a id="downBtn" class="btn-down" download="movie_recap.mp4">📥 DOWNLOAD RECAP VIDEO</a>
+            <a id="downBtn" class="btn-down" download="ai_movie_recap.mp4">📥 DOWNLOAD RECAP VIDEO</a>
         </div>
     </div>
 
@@ -101,14 +102,12 @@ HTML_CONTENT = """
 
             const btn = document.getElementById('submitBtn');
             const status = document.getElementById('status');
-            const scriptPreview = document.getElementById('script-preview');
             const resultArea = document.getElementById('result-area');
             
             btn.disabled = true;
-            btn.innerText = "⏳ AI Analyzing Video Scenes...";
-            status.innerText = "Extracting video scenes and generating Burmese storytelling recap...";
+            btn.innerText = "⏳ Gemini AI Analyzing Video Scenes...";
+            status.innerText = "Gemini AI is watching video frames and writing full Burmese recap story...";
             resultArea.style.display = "none";
-            scriptPreview.style.display = "none";
 
             const formData = new FormData();
             formData.append("video", selectedFile);
@@ -125,7 +124,7 @@ HTML_CONTENT = """
                     throw new Error(err || ("Status: " + response.status));
                 }
 
-                status.innerText = "Recap video created successfully!";
+                status.innerText = "Recap video generated successfully!";
                 const blob = await response.blob();
                 const videoUrl = URL.createObjectURL(blob);
                 
@@ -167,61 +166,51 @@ async def process_video(
         with open(input_video_path, "wb") as buffer:
             shutil.copyfileobj(video.file, buffer)
 
-        # ၂။ Extract Frame Images
+        # ၂။ Extract Frame Images from Video
         frame_pattern = os.path.join(temp_dir, "frame_%d.jpg")
         cmd_extract = [
             "ffmpeg", "-y", "-i", input_video_path,
-            "-vf", "fps=1/5,scale=512:-1", "-vframes", "3",
+            "-vf", "fps=1/4,scale=640:-1", "-vframes", "4",
             frame_pattern
         ]
         subprocess.run(cmd_extract, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # ၃။ AI Vision Model (Pollinations Vision API - Key မလိုဘဲ Frame ပုံကို တိုက်ရိုက် ကြည့်ရှုအကဲဖြတ်သည့် စနစ်)
-        frames = sorted(glob.glob(os.path.join(temp_dir, "frame_*.jpg")))
-        burmese_script = ""
+        image_parts = []
+        for img_path in sorted(glob.glob(os.path.join(temp_dir, "frame_*.jpg"))):
+            with open(img_path, "rb") as img_file:
+                b64_data = base64.b64encode(img_file.read()).decode("utf-8")
+                image_parts.append({
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": b64_data
+                    }
+                })
 
-        if frames:
-            with open(frames[0], "rb") as img_file:
-                b64_img = base64.b64encode(img_file.read()).decode("utf-8")
-                
-            prompt = (
-                "Look at this video scene carefully. Describe what the person/character is doing, "
-                "their expression, action and story in exciting Burmese movie recap storytelling style. "
-                "Output Burmese text only. စိတ်ဝင်စားဖွယ် မြန်မာလို Movie Recap ဇာတ်ကြောင်း အစအဆုံး အသေးစိတ် ပြောပြပေးပါ။"
-            )
-            
-            try:
-                payload = {
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
-                            ]
-                        }
-                    ],
-                    "model": "openai"
-                }
-                res = requests.post("https://text.pollinations.ai/openai", json=payload, timeout=25)
-                if res.status_code == 200 and len(res.text.strip()) > 20:
-                    burmese_script = res.text.strip()
-            except Exception:
-                pass
+        # ၃။ Call Gemini 1.5 Flash Vision API
+        prompt_text = (
+            "ဒီဗီဒီယို ပုံရိပ်တွေကို သေချာကြည့်ရှုပြီး Facebook/TikTok Movie Recap ပုံစံမျိုး "
+            "ဇာတ်ကောင်တွေ ဘာလုပ်နေလဲ၊ ဘာအဖြစ်အပျက်တွေ ဖြစ်ပျက်နေလဲဆိုတာကို "
+            "စိတ်ဝင်စားဖွယ် မြန်မာဘာသာစကားဖြင့် ဇာတ်ကြောင်း အစအဆုံး အသေးစိတ် ပြန်ပြောပြပေးပါ။ "
+            "စာလုံးရေ အနည်းဆုံး စကားလုံး ၁၂၀ ခန့် ရှည်လျားသော မြန်မာစာသားသက်သက်သာ ရေးပေးပါ။ အင်္ဂလိပ်စာလုံးဝ မပါစေရ။"
+        )
 
-        if not burmese_script:
-            burmese_script = (
-                "ဒီဗီဒီယိုထဲမှာတော့ ဇာတ်ကောင်ရဲ့ အမူအရာနဲ့ လှုပ်ရှားမှုတွေကနေတစ်ဆင့် "
-                "ထူးခြားတဲ့ အခြေအနေတစ်ခု ဖြစ်ပျက်နေတာကို တွေ့မြင်ရပါတယ်။ "
-                "ဇာတ်ကောင်ဟာ တစ်ခုခုကို စဉ်းစားဆုံးဖြတ်နေသလို အာရုံစိုက်လုပ်ဆောင်နေတာဖြစ်ပြီး "
-                "ရှေ့ဆက် ဘာတွေဆက်ဖြစ်မလဲဆိုတာ စိတ်ဝင်စားဖွယ် ဆက်လက်စောင့်ကြည့်ရမှာ ဖြစ်ပါတယ်။"
-            )
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+        headers = {"Content-Type": "application/json"}
+        payload = {"contents": [{"parts": [{"text": prompt_text}] + image_parts}]}
 
-        # ၄။ Edge TTS Burmese Voice
+        resp = requests.post(url, headers=headers, json=payload, timeout=35)
+        
+        if resp.status_code != 200:
+            raise Exception(f"Gemini API Error: {resp.text}")
+
+        data = resp.json()
+        burmese_script = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+        # ၄။ Burmese Voice Synthesis (Edge-TTS)
         communicate = edge_tts.Communicate(burmese_script, voice_name)
         await communicate.save(audio_path)
 
-        # ၅။ Merge Video & Voice (Full Video Duration)
+        # ၅။ Merge Full Video & Audio
         cmd_merge = [
             "ffmpeg", "-y",
             "-i", input_video_path,
