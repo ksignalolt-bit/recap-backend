@@ -5,8 +5,7 @@ import edge_tts
 import asyncio
 import os
 import shutil
-import traceback
-from moviepy import VideoFileClip, AudioFileClip
+import subprocess
 
 app = FastAPI()
 
@@ -36,7 +35,7 @@ HTML_CONTENT = """
         .upload-card { border: 2px dashed #475569; border-radius: 16px; padding: 30px 15px; text-align: center; background: #0f172a; cursor: pointer; margin-bottom: 20px; }
         input[type="file"] { display: none; }
         .voice-select { width: 100%; padding: 12px; border-radius: 10px; background: #0f172a; color: #fff; border: 1px solid #475569; margin-bottom: 20px; font-size: 14px; }
-        .btn { width: 100%; padding: 16px; background: #2563eb; color: #fff; border: none; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+        .btn { width: 100%; padding: 16px; background: #2563eb; color: #fff; border: none; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; }
         .btn:disabled { background: #475569; cursor: not-allowed; }
         #status { margin-top: 15px; font-size: 13px; text-align: center; color: #38bdf8; line-height: 1.5; }
         #result-area { margin-top: 20px; display: none; text-align: center; }
@@ -50,7 +49,7 @@ HTML_CONTENT = """
             <div class="icon">🎬</div>
             <div>
                 <h1>Auto Video Recap & Editor</h1>
-                <p class="sub">Copyright-safe Burmese recapping tool</p>
+                <p class="sub">Ultra Fast Burmese recapping tool</p>
             </div>
         </div>
 
@@ -99,8 +98,8 @@ HTML_CONTENT = """
             const resultArea = document.getElementById('result-area');
             
             btn.disabled = true;
-            btn.innerText = "⏳ Processing Video...";
-            status.innerText = "Generating Burmese narration & processing video... Please wait (about 15-30s).";
+            btn.innerText = "⏳ Processing (Fast)...";
+            status.innerText = "Merging Burmese Audio into Video... Please wait.";
             resultArea.style.display = "none";
 
             const formData = new FormData();
@@ -113,25 +112,18 @@ HTML_CONTENT = """
                     body: formData
                 });
 
-                if (!response.ok) {
-                    const errText = await response.text();
-                    throw new Error(errText || "Status code: " + response.status);
-                }
+                if (!response.ok) throw new Error("Processing failed (Status: " + response.status + ")");
 
                 const blob = await response.blob();
                 const videoUrl = URL.createObjectURL(blob);
                 
-                const previewPlayer = document.getElementById('previewPlayer');
-                previewPlayer.src = videoUrl;
-                
-                const downBtn = document.getElementById('downBtn');
-                downBtn.href = videoUrl;
-                
+                document.getElementById('previewPlayer').src = videoUrl;
+                document.getElementById('downBtn').href = videoUrl;
                 resultArea.style.display = "block";
-                status.innerText = "Done! Download or play below.";
+                status.innerText = "Complete!";
             } catch (err) {
-                alert("Error: " + err.message);
-                status.innerText = "Error details: " + err.message;
+                alert(err.message);
+                status.innerText = "Error: " + err.message;
             } finally {
                 btn.disabled = false;
                 btn.innerText = "🚀 START AUTO RECAP";
@@ -160,36 +152,29 @@ async def process_video(
     output_video_path = os.path.join(temp_dir, f"out_{safe_name}")
 
     try:
-        # Save video
+        # 1. Save uploaded file
         with open(input_video_path, "wb") as buffer:
             shutil.copyfileobj(video.file, buffer)
 
-        # Generate Burmese TTS
+        # 2. Generate Burmese TTS Voice
         burmese_script = "မင်္ဂလာပါခင်ဗျာ။ ဒါကတော့ AI ကနေ အလိုအလျောက် မြန်မာဘာသာနဲ့ ပြန်လည်ရှင်းပြပေးထားတဲ့ Video Recap ဖြစ်ပါတယ်။"
         communicate = edge_tts.Communicate(burmese_script, voice_name)
         await communicate.save(audio_path)
 
-        # Merge Audio & Video
-        video_clip = VideoFileClip(input_video_path)
-        audio_clip = AudioFileClip(audio_path)
-
-        # Match audio duration or keep video intact
-        if hasattr(video_clip, 'with_audio'):
-            final_clip = video_clip.with_audio(audio_clip)
-        else:
-            final_clip = video_clip.set_audio(audio_clip)
-
-        final_clip.write_videofile(
-            output_video_path,
-            codec="libx264",
-            audio_codec="aac",
-            preset="ultrafast",
-            threads=2,
-            logger=None
-        )
-
-        video_clip.close()
-        audio_clip.close()
+        # 3. Superfast Merge using FFmpeg direct copy (No Heavy Re-encoding)
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", input_video_path,
+            "-i", audio_path,
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-shortest",
+            output_video_path
+        ]
+        
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         return FileResponse(
             path=output_video_path,
@@ -197,6 +182,4 @@ async def process_video(
             media_type="video/mp4"
         )
     except Exception as e:
-        error_msg = traceback.format_exc()
-        print("Error during video processing:", error_msg)
         raise HTTPException(status_code=500, detail=str(e))
