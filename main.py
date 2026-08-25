@@ -6,14 +6,11 @@ import asyncio
 import os
 import shutil
 import subprocess
-import google.generativeai as genai
+import requests
+import base64
+import glob
 
-# Gemini API Configuration
 GEMINI_KEY = "AQ.Ab8RN6KorPJHyJVtjQdBkvP-1NzLtkOtTseBdZfuKPw-pAHbMQ"
-try:
-    genai.configure(api_key=GEMINI_KEY)
-except Exception:
-    pass
 
 app = FastAPI()
 
@@ -47,7 +44,6 @@ HTML_CONTENT = """
         .btn { width: 100%; padding: 16px; background: #2563eb; color: #fff; border: none; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; }
         .btn:disabled { background: #475569; cursor: not-allowed; }
         #status { margin-top: 15px; font-size: 13px; text-align: center; color: #38bdf8; line-height: 1.5; }
-        #script-box { margin-top: 15px; padding: 12px; background: #0f172a; border-radius: 10px; font-size: 12px; color: #cbd5e1; display: none; border-left: 4px solid #38bdf8; max-height: 150px; overflow-y: auto; text-align: left; }
         #result-area { margin-top: 20px; display: none; text-align: center; }
         video { width: 100%; border-radius: 12px; margin-top: 10px; max-height: 280px; background: #000; }
         .btn-down { background: #10b981; margin-top: 12px; text-decoration: none; display: inline-block; padding: 14px; border-radius: 10px; color: #fff; font-weight: bold; width: 100%; }
@@ -79,7 +75,6 @@ HTML_CONTENT = """
         <button id="submitBtn" class="btn" onclick="processVideo()">🚀 AI ANALYZE & RECAP</button>
 
         <div id="status"></div>
-        <div id="script-box"></div>
 
         <div id="result-area">
             <h3 style="font-size: 14px; color: #4ade80;">✅ Full Video Ready!</h3>
@@ -106,14 +101,12 @@ HTML_CONTENT = """
 
             const btn = document.getElementById('submitBtn');
             const status = document.getElementById('status');
-            const scriptBox = document.getElementById('script-box');
             const resultArea = document.getElementById('result-area');
             
             btn.disabled = true;
             btn.innerText = "⏳ AI Analyzing Video...";
-            status.innerText = "AI is watching the video visuals, actions and audio to write Burmese story...";
+            status.innerText = "Extracting video frames and generating Burmese recap narration...";
             resultArea.style.display = "none";
-            scriptBox.style.display = "none";
 
             const formData = new FormData();
             formData.append("video", selectedFile);
@@ -168,35 +161,55 @@ async def process_video(
     output_video_path = os.path.join(temp_dir, f"out_{safe_name}")
 
     try:
-        # ၁။ Video ဖိုင် သိမ်းခြင်း
+        # ၁။ Video ဖိုင် သိမ်းဆည်းခြင်း
         with open(input_video_path, "wb") as buffer:
             shutil.copyfileobj(video.file, buffer)
 
-        # ၂။ Gemini Vision ဖြင့် Video ကို တိုက်ရိုက် ကြည့်ရှုလေ့လာခိုင်းခြင်း
-        try:
-            video_file = genai.upload_file(path=input_video_path)
-            while video_file.state.name == "PROCESSING":
-                await asyncio.sleep(2)
-                video_file = genai.get_file(video_file.name)
+        # ၂။ Video ထဲမှ Frame ပုံရိပ် ၃ ပုံ ထုတ်ယူခြင်း (ပေါ့ပါးမြန်ဆန်စေရန်)
+        frame_pattern = os.path.join(temp_dir, "frame_%d.jpg")
+        cmd_extract = [
+            "ffmpeg", "-y", "-i", input_video_path,
+            "-vf", "fps=1/5", "-vframes", "3",
+            frame_pattern
+        ]
+        subprocess.run(cmd_extract, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            prompt = (
-                "ဒီဗီဒီယိုထဲမှာ ဖြစ်ပျက်နေတဲ့ အဖြစ်အပျက်၊ လူတွေရဲ့ လုပ်ဆောင်ချက်၊ မျက်နှာအမူအရာနဲ့ အခြေအနေတွေကို သေချာကြည့်ပါ။ "
-                "စာတန်းထိုး ပါသည်ဖြစ်စေ မပါသည်ဖြစ်စေ ဗီဒီယိုမြင်ကွင်းအရ ဘာဖြစ်နေလဲဆိုတာကို "
-                "Facebook/TikTok Movie Recap ပုံစံမျိုး စိတ်ဝင်စားဖွယ် မြန်မာဘာသာစကားဖြင့် ဇာတ်ကြောင်းပြန်ပြောပေးပါ။ "
-                "စာသားကို အပိုမပါစေဘဲ မြန်မာစာသားသက်သက် အပြည့်အစုံ ရေးပေးပါ။"
-            )
-            response = model.generate_content([video_file, prompt])
-            burmese_script = response.text.strip()
-        except Exception:
-            burmese_script = "ဒီဗီဒီယိုထဲမှာတော့ ဇာတ်ကောင်ရဲ့ ထူးခြားတဲ့ အပြုအမူတွေနဲ့အတူ မထင်မှတ်ထားတဲ့ အဖြစ်အပျက်တွေကို စိတ်ဝင်စားဖွယ် တွေ့မြင်ရမှာ ဖြစ်ပါတယ်။"
+        # Frame များကို Base64 ပြောင်းပြီး Gemini REST API ဆီ ပို့ခြင်း
+        image_parts = []
+        for img_path in sorted(glob.glob(os.path.join(temp_dir, "frame_*.jpg"))):
+            with open(img_path, "rb") as img_file:
+                b64_data = base64.b64encode(img_file.read()).decode("utf-8")
+                image_parts.append({
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": b64_data
+                    }
+                })
 
-        # ၃။ မြန်မာအသံ ထုတ်ယူခြင်း
+        prompt_text = (
+            "ဒီဗီဒီယို Frame ပုံရိပ်တွေထဲမှာ ဖြစ်ပျက်နေတဲ့ အခြေအနေ၊ ဇာတ်ကောင်တွေရဲ့ လုပ်ဆောင်ချက်တွေကို ကြည့်ရှုပြီး "
+            "TikTok/Facebook Movie Recap ပုံစံမျိုး စိတ်ဝင်စားဖွယ် ဇာတ်ကြောင်းပြန်ပြောပေးပါ။ "
+            "စာလုံးရေ အနည်းဆုံး စကားလုံး ၈၀ မှ ၁၀၀ ခန့် အရှည်ရှိသော မြန်မာစာသားသက်သက်သာ ရေးပေးပါ။"
+        )
+
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+        headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY}
+        payload = {"contents": [{"parts": [{"text": prompt_text}] + image_parts}]}
+
+        resp = requests.post(url, headers=headers, json=payload, timeout=25)
+
+        if resp.status_code == 200:
+            data = resp.json()
+            burmese_script = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        else:
+            burmese_script = "ဇာတ်လမ်းစတင်ချိန်မှာတော့ ဇာတ်ကောင်ရဲ့ ထူးခြားတဲ့ လှုပ်ရှားမှုတွေနဲ့အတူ စိတ်ဝင်စားဖွယ် အဖြစ်အပျက်များစွာကို ဆက်လက်တွေ့မြင်ရမှာ ဖြစ်ပါတယ်။"
+
+        # ၃။ မြန်မာအသံဖိုင် ဖန်တီးခြင်း
         communicate = edge_tts.Communicate(burmese_script, voice_name)
         await communicate.save(audio_path)
 
-        # ၄။ ဗီဒီယို မူရင်းအရှည်ကို မဖြတ်ဘဲ အသံအစားထိုးခြင်း (No -shortest)
-        cmd = [
+        # ၄။ မူရင်းဗီဒီယိုအရှည် အပြည့်အဝဖြင့် ပေါင်းစပ်ခြင်း
+        cmd_merge = [
             "ffmpeg", "-y",
             "-i", input_video_path,
             "-i", audio_path,
@@ -206,7 +219,7 @@ async def process_video(
             "-map", "1:a:0",
             output_video_path
         ]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(cmd_merge, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         return FileResponse(
             path=output_video_path,
