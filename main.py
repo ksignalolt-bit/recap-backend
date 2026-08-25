@@ -1,17 +1,18 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+import google.generativeai as genai
+from PIL import Image
 import edge_tts
 import asyncio
 import os
 import shutil
 import subprocess
-import requests
-import base64
 import glob
 
-# Gemini API Key အစစ်
-GEMINI_KEY = "AIzaSyALlot4FzykPAXmCLmAgKOUHp0HmyklT2s"
+# Gemini AI Studio Key
+GEMINI_KEY = "AQ.Ab8RN6KgTVyaSRbAPIvnBHglR5vhTytORJTiL81XDB-sI5pKSA"
+genai.configure(api_key=GEMINI_KEY)
 
 app = FastAPI()
 
@@ -31,106 +32,69 @@ HTML_CONTENT = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Movie Recap (Burmese)</title>
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        body { background-color: #0f172a; color: #f8fafc; display: flex; justify-content: center; padding: 20px 10px; min-height: 100vh; }
-        .container { width: 100%; max-width: 480px; background: #1e293b; border-radius: 20px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid #334155; }
-        .header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
-        .icon { font-size: 28px; background: #2563eb; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 12px; }
-        h1 { font-size: 18px; font-weight: 700; color: #fff; }
-        p.sub { font-size: 12px; color: #94a3b8; }
-        .upload-card { border: 2px dashed #475569; border-radius: 16px; padding: 26px 15px; text-align: center; background: #0f172a; cursor: pointer; margin-bottom: 16px; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
+        body { background: #0f172a; color: #f8fafc; display: flex; justify-content: center; padding: 20px 10px; }
+        .container { width: 100%; max-width: 480px; background: #1e293b; border-radius: 16px; padding: 20px; }
+        .upload-card { border: 2px dashed #475569; border-radius: 12px; padding: 24px; text-align: center; cursor: pointer; margin-bottom: 16px; }
         input[type="file"] { display: none; }
-        label { font-size: 12px; color: #94a3b8; margin-bottom: 6px; display: block; }
-        .input-box { width: 100%; padding: 12px; border-radius: 10px; background: #0f172a; color: #fff; border: 1px solid #475569; margin-bottom: 14px; font-size: 14px; }
-        .btn { width: 100%; padding: 16px; background: #2563eb; color: #fff; border: none; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; }
-        .btn:disabled { background: #475569; cursor: not-allowed; }
-        #status { margin-top: 15px; font-size: 13px; text-align: center; color: #38bdf8; line-height: 1.5; }
+        .btn { width: 100%; padding: 14px; background: #2563eb; color: #fff; border: none; border-radius: 10px; font-weight: bold; cursor: pointer; }
+        .btn:disabled { background: #475569; }
+        #status { margin-top: 15px; font-size: 13px; text-align: center; color: #38bdf8; }
         #result-area { margin-top: 20px; display: none; text-align: center; }
-        video { width: 100%; border-radius: 12px; margin-top: 10px; max-height: 280px; background: #000; }
-        .btn-down { background: #10b981; margin-top: 12px; text-decoration: none; display: inline-block; padding: 14px; border-radius: 10px; color: #fff; font-weight: bold; width: 100%; }
+        video { width: 100%; border-radius: 10px; margin-top: 10px; background: #000; }
+        .btn-down { background: #10b981; margin-top: 10px; display: block; padding: 12px; border-radius: 8px; color: #fff; text-decoration: none; font-weight: bold; }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <div class="icon">🎬</div>
-            <div>
-                <h1>AI Video Story Recap</h1>
-                <p class="sub">Gemini Vision Analysis & Burmese Narration</p>
-            </div>
-        </div>
-
+        <h2 style="margin-bottom: 15px;">🎬 AI Video Recap (Burmese)</h2>
         <div class="upload-card" onclick="document.getElementById('videoFile').click()">
-            <div style="font-size: 32px; margin-bottom: 8px;">📤</div>
-            <strong id="file-label" style="font-size: 14px; color: #cbd5e1;">SELECT VIDEO FILE</strong>
-            <p style="font-size: 11px; color: #64748b; margin-top: 4px;">Upload video (MP4)</p>
+            <strong id="file-label">SELECT VIDEO FILE</strong>
         </div>
         <input type="file" id="videoFile" accept="video/*" onchange="fileSelected(this)">
 
-        <label>Burmese Voice:</label>
-        <select id="voice" class="input-box">
-            <option value="my-MM-ThihaNeural">Thiha (Narrator Male)</option>
-            <option value="my-MM-NilarNeural">Nilar (Narrator Female)</option>
-        </select>
-
         <button id="submitBtn" class="btn" onclick="processVideo()">🚀 AI ANALYZE & RECAP</button>
-
         <div id="status"></div>
 
         <div id="result-area">
-            <h3 style="font-size: 14px; color: #4ade80;">✅ Full Recap Video Ready!</h3>
+            <h3>✅ Recap Video Ready!</h3>
             <video id="previewPlayer" controls playsinline></video>
-            <a id="downBtn" class="btn-down" download="ai_movie_recap.mp4">📥 DOWNLOAD RECAP VIDEO</a>
+            <a id="downBtn" class="btn-down" download="recap_video.mp4">📥 DOWNLOAD</a>
         </div>
     </div>
 
     <script>
         let selectedFile = null;
-
         function fileSelected(input) {
             if (input.files && input.files[0]) {
                 selectedFile = input.files[0];
-                document.getElementById('file-label').innerText = "Selected: " + selectedFile.name;
+                document.getElementById('file-label').innerText = selectedFile.name;
             }
         }
-
         async function processVideo() {
-            if (!selectedFile) {
-                alert("Please select a video file first!");
-                return;
-            }
-
+            if (!selectedFile) return alert("Select video first!");
             const btn = document.getElementById('submitBtn');
             const status = document.getElementById('status');
             const resultArea = document.getElementById('result-area');
             
             btn.disabled = true;
-            btn.innerText = "⏳ Gemini AI Analyzing Video Scenes...";
-            status.innerText = "Gemini AI is watching video frames and writing full Burmese recap story...";
+            btn.innerText = "⏳ Gemini 1.5 Flash Analyzing...";
+            status.innerText = "Gemini is analyzing video frames and writing Burmese recap...";
             resultArea.style.display = "none";
 
             const formData = new FormData();
             formData.append("video", selectedFile);
-            formData.append("voice_name", document.getElementById('voice').value);
 
             try {
-                const response = await fetch("/process-video", {
-                    method: "POST",
-                    body: formData
-                });
-
-                if (!response.ok) {
-                    const err = await response.text();
-                    throw new Error(err || ("Status: " + response.status));
-                }
-
-                status.innerText = "Recap video generated successfully!";
+                const response = await fetch("/process-video", { method: "POST", body: formData });
+                if (!response.ok) throw new Error(await response.text());
+                
                 const blob = await response.blob();
                 const videoUrl = URL.createObjectURL(blob);
-                
                 document.getElementById('previewPlayer').src = videoUrl;
                 document.getElementById('downBtn').href = videoUrl;
                 resultArea.style.display = "block";
+                status.innerText = "Completed!";
             } catch (err) {
                 alert(err.message);
                 status.innerText = "Error: " + err.message;
@@ -149,10 +113,7 @@ def read_root():
     return HTMLResponse(content=HTML_CONTENT)
 
 @app.post("/process-video")
-async def process_video(
-    video: UploadFile = File(...),
-    voice_name: str = Form("my-MM-ThihaNeural")
-):
+async def process_video(video: UploadFile = File(...)):
     temp_dir = "/tmp/recap_work"
     os.makedirs(temp_dir, exist_ok=True)
 
@@ -166,51 +127,41 @@ async def process_video(
         with open(input_video_path, "wb") as buffer:
             shutil.copyfileobj(video.file, buffer)
 
-        # ၂။ Extract Frame Images from Video
+        # ၂။ Extract Frame Images
         frame_pattern = os.path.join(temp_dir, "frame_%d.jpg")
         cmd_extract = [
             "ffmpeg", "-y", "-i", input_video_path,
-            "-vf", "fps=1/4,scale=640:-1", "-vframes", "4",
+            "-vf", "fps=1/3,scale=640:-1", "-vframes", "4",
             frame_pattern
         ]
         subprocess.run(cmd_extract, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        image_parts = []
-        for img_path in sorted(glob.glob(os.path.join(temp_dir, "frame_*.jpg"))):
-            with open(img_path, "rb") as img_file:
-                b64_data = base64.b64encode(img_file.read()).decode("utf-8")
-                image_parts.append({
-                    "inline_data": {
-                        "mime_type": "image/jpeg",
-                        "data": b64_data
-                    }
-                })
+        image_files = sorted(glob.glob(os.path.join(temp_dir, "frame_*.jpg")))
+        if not image_files:
+            raise Exception("Cannot extract frames from video")
 
-        # ၃။ Call Gemini 1.5 Flash Vision API
-        prompt_text = (
-            "ဒီဗီဒီယို ပုံရိပ်တွေကို သေချာကြည့်ရှုပြီး Facebook/TikTok Movie Recap ပုံစံမျိုး "
-            "ဇာတ်ကောင်တွေ ဘာလုပ်နေလဲ၊ ဘာအဖြစ်အပျက်တွေ ဖြစ်ပျက်နေလဲဆိုတာကို "
-            "စိတ်ဝင်စားဖွယ် မြန်မာဘာသာစကားဖြင့် ဇာတ်ကြောင်း အစအဆုံး အသေးစိတ် ပြန်ပြောပြပေးပါ။ "
-            "စာလုံးရေ အနည်းဆုံး စကားလုံး ၁၂၀ ခန့် ရှည်လျားသော မြန်မာစာသားသက်သက်သာ ရေးပေးပါ။ အင်္ဂလိပ်စာလုံးဝ မပါစေရ။"
+        pil_images = [Image.open(f) for f in image_files]
+
+        # ၃။ Gemini 1.5 Flash Vision Call via Official SDK
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        prompt = (
+            "ဒီဗီဒီယိုကနေ ရိုက်ကူးထားတဲ့ ပုံရိပ်တွေကို သေချာကြည့်ပါ။ "
+            "ဗီဒီယိုထဲမှာပါတဲ့ လူတွေ၊ သူတို့ဘာလုပ်နေလဲ၊ အခြေအနေနဲ့ အဖြစ်အပျက်တွေကို အတိအကျ သုံးသပ်ပြီး "
+            "Facebook Movie Recap ပုံစံမျိုး မြန်မာစကားပြေဖြင့် စိတ်ဝင်စားဖွယ် ဇာတ်ကြောင်းပြန်ပြောပြပါ။ "
+            "အင်္ဂလိပ်စာလုံးဝ မပါစေရ။ မြန်မာစာသက်သက်သာ ရေးပေးပါ။"
         )
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-        headers = {"Content-Type": "application/json"}
-        payload = {"contents": [{"parts": [{"text": prompt_text}] + image_parts}]}
+        response = model.generate_content([prompt] + pil_images)
+        burmese_script = response.text.strip()
 
-        resp = requests.post(url, headers=headers, json=payload, timeout=35)
-        
-        if resp.status_code != 200:
-            raise Exception(f"Gemini API Error: {resp.text}")
+        if not burmese_script:
+            raise Exception("Gemini returned empty script")
 
-        data = resp.json()
-        burmese_script = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-
-        # ၄။ Burmese Voice Synthesis (Edge-TTS)
-        communicate = edge_tts.Communicate(burmese_script, voice_name)
+        # ၄။ Edge-TTS Burmese Audio
+        communicate = edge_tts.Communicate(burmese_script, "my-MM-ThihaNeural")
         await communicate.save(audio_path)
 
-        # ၅။ Merge Full Video & Audio
+        # ၅။ Merge Video and Audio
         cmd_merge = [
             "ffmpeg", "-y",
             "-i", input_video_path,
@@ -225,7 +176,7 @@ async def process_video(
 
         return FileResponse(
             path=output_video_path,
-            filename=f"burmese_recap_{safe_name}",
+            filename=f"recap_{safe_name}",
             media_type="video/mp4"
         )
     except Exception as e:
