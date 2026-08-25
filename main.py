@@ -6,6 +6,10 @@ import asyncio
 import os
 import shutil
 import subprocess
+import google.generativeai as genai
+
+# Gemini API Key Configuration
+genai.configure(api_key="AQ.Ab8RN6Jv-N9P1UxpIzLnNTGO51kK_qaXjo-vC2E5FFkWTw7Euw")
 
 app = FastAPI()
 
@@ -23,7 +27,7 @@ HTML_CONTENT = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Auto Video Recap & Editor</title>
+    <title>AI Video Story Recap (Burmese)</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
         body { background-color: #0f172a; color: #f8fafc; display: flex; justify-content: center; padding: 20px 10px; min-height: 100vh; }
@@ -48,32 +52,32 @@ HTML_CONTENT = """
         <div class="header">
             <div class="icon">🎬</div>
             <div>
-                <h1>Auto Video Recap & Editor</h1>
-                <p class="sub">Ultra Fast Burmese recapping tool</p>
+                <h1>AI Video Story Recap</h1>
+                <p class="sub">AI Content Analysis & Burmese Narration</p>
             </div>
         </div>
 
         <div class="upload-card" onclick="document.getElementById('videoFile').click()">
             <div style="font-size: 32px; margin-bottom: 8px;">📤</div>
-            <strong id="file-label" style="font-size: 14px; color: #cbd5e1;">SELECT INPUT VIDEO (MP4)</strong>
+            <strong id="file-label" style="font-size: 14px; color: #cbd5e1;">SELECT VIDEO TO ANALYZE</strong>
             <p style="font-size: 11px; color: #64748b; margin-top: 4px;">Click to browse from phone</p>
         </div>
         <input type="file" id="videoFile" accept="video/*" onchange="fileSelected(this)">
 
-        <label style="font-size: 12px; color: #94a3b8; margin-bottom: 6px; display: block;">Burmese Voice:</label>
+        <label style="font-size: 12px; color: #94a3b8; margin-bottom: 6px; display: block;">Burmese Voice Style:</label>
         <select id="voice" class="voice-select">
-            <option value="my-MM-ThihaNeural">Thiha (Male Voice)</option>
-            <option value="my-MM-NilarNeural">Nilar (Female Voice)</option>
+            <option value="my-MM-ThihaNeural">Thiha (Narrator Male)</option>
+            <option value="my-MM-NilarNeural">Nilar (Narrator Female)</option>
         </select>
 
-        <button id="submitBtn" class="btn" onclick="processVideo()">🚀 START AUTO RECAP</button>
+        <button id="submitBtn" class="btn" onclick="processVideo()">🚀 AI ANALYZE & RECAP</button>
 
         <div id="status"></div>
 
         <div id="result-area">
-            <h3 style="font-size: 14px; color: #4ade80;">✅ Recap Video Ready!</h3>
+            <h3 style="font-size: 14px; color: #4ade80;">✅ Full Recap Video Ready!</h3>
             <video id="previewPlayer" controls playsinline></video>
-            <a id="downBtn" class="btn-down" download="burmese_recap.mp4">📥 DOWNLOAD RECAP VIDEO</a>
+            <a id="downBtn" class="btn-down" download="ai_recap.mp4">📥 DOWNLOAD RECAP VIDEO</a>
         </div>
     </div>
 
@@ -98,8 +102,8 @@ HTML_CONTENT = """
             const resultArea = document.getElementById('result-area');
             
             btn.disabled = true;
-            btn.innerText = "⏳ Processing (Fast)...";
-            status.innerText = "Merging Burmese Audio into Video... Please wait.";
+            btn.innerText = "⏳ AI is Watching & Analyzing...";
+            status.innerText = "AI is watching your video frames and writing a Burmese story script...";
             resultArea.style.display = "none";
 
             const formData = new FormData();
@@ -112,21 +116,24 @@ HTML_CONTENT = """
                     body: formData
                 });
 
-                if (!response.ok) throw new Error("Processing failed (Status: " + response.status + ")");
+                if (!response.ok) {
+                    const err = await response.text();
+                    throw new Error(err || ("Status: " + response.status));
+                }
 
+                status.innerText = "Merging audio into video complete!";
                 const blob = await response.blob();
                 const videoUrl = URL.createObjectURL(blob);
                 
                 document.getElementById('previewPlayer').src = videoUrl;
                 document.getElementById('downBtn').href = videoUrl;
                 resultArea.style.display = "block";
-                status.innerText = "Complete!";
             } catch (err) {
                 alert(err.message);
                 status.innerText = "Error: " + err.message;
             } finally {
                 btn.disabled = false;
-                btn.innerText = "🚀 START AUTO RECAP";
+                btn.innerText = "🚀 AI ANALYZE & RECAP";
             }
         }
     </script>
@@ -152,16 +159,31 @@ async def process_video(
     output_video_path = os.path.join(temp_dir, f"out_{safe_name}")
 
     try:
-        # 1. Save uploaded file
+        # ၁။ Video ဖိုင် သိမ်းဆည်းခြင်း
         with open(input_video_path, "wb") as buffer:
             shutil.copyfileobj(video.file, buffer)
 
-        # 2. Generate Burmese TTS Voice
-        burmese_script = "မင်္ဂလာပါခင်ဗျာ။ ဒါကတော့ AI ကနေ အလိုအလျောက် မြန်မာဘာသာနဲ့ ပြန်လည်ရှင်းပြပေးထားတဲ့ Video Recap ဖြစ်ပါတယ်။"
+        # ၂။ Gemini AI သို့ Video တင်ပြီး မြန်မာလို Recap ရေးခိုင်းခြင်း
+        video_ai_file = genai.upload_file(path=input_video_path)
+        
+        while video_ai_file.state.name == "PROCESSING":
+            await asyncio.sleep(2)
+            video_ai_file = genai.get_file(video_ai_file.name)
+
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        prompt = (
+            "ဒီဗီဒီယိုထဲမှာ ဘာတွေဖြစ်ပျက်နေလဲဆိုတာ သေချာကြည့်ပြီး "
+            "Facebook/TikTok Movie Recap ပုံစံမျိုး စိတ်ဝင်စားဖွယ် မြန်မာဘာသာစကားဖြင့် "
+            "အနှစ်ချုပ် ဇာတ်ကြောင်းပြန်ပြောပေးပါ။ စာသားသက်သက်သာ ရေးပေးပါ (အင်္ဂလိပ်စာနှင့် emoji များ မပါစေရ)။"
+        )
+        response = model.generate_content([video_ai_file, prompt])
+        burmese_script = response.text.strip()
+
+        # ၃။ AI ဇာတ်ကြောင်းကို Edge-TTS ဖြင့် အသံဖိုင်ထုတ်ခြင်း
         communicate = edge_tts.Communicate(burmese_script, voice_name)
         await communicate.save(audio_path)
 
-        # 3. Superfast Merge using FFmpeg direct copy (No Heavy Re-encoding)
+        # ၄။ ဗီဒီယိုနှင့် မြန်မာအသံ ပေါင်းစပ်ခြင်း
         cmd = [
             "ffmpeg", "-y",
             "-i", input_video_path,
@@ -173,12 +195,11 @@ async def process_video(
             "-shortest",
             output_video_path
         ]
-        
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         return FileResponse(
             path=output_video_path,
-            filename=f"burmese_{safe_name}",
+            filename=f"ai_recap_{safe_name}",
             media_type="video/mp4"
         )
     except Exception as e:
