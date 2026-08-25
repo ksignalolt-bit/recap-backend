@@ -1,9 +1,11 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import edge_tts
 import asyncio
 import os
+import shutil
+import traceback
 from moviepy import VideoFileClip, AudioFileClip
 
 app = FastAPI()
@@ -16,7 +18,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Web UI Frontend (HTML + Modern Dark Mode UI)
 HTML_CONTENT = """
 <!DOCTYPE html>
 <html lang="en">
@@ -32,16 +33,15 @@ HTML_CONTENT = """
         .icon { font-size: 28px; background: #2563eb; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 12px; }
         h1 { font-size: 18px; font-weight: 700; color: #fff; }
         p.sub { font-size: 12px; color: #94a3b8; }
-        .upload-card { border: 2px dashed #475569; border-radius: 16px; padding: 30px 15px; text-align: center; background: #0f172a; cursor: pointer; margin-bottom: 20px; transition: 0.3s; }
-        .upload-card:hover { border-color: #3b82f6; }
+        .upload-card { border: 2px dashed #475569; border-radius: 16px; padding: 30px 15px; text-align: center; background: #0f172a; cursor: pointer; margin-bottom: 20px; }
         input[type="file"] { display: none; }
         .voice-select { width: 100%; padding: 12px; border-radius: 10px; background: #0f172a; color: #fff; border: 1px solid #475569; margin-bottom: 20px; font-size: 14px; }
-        .btn { width: 100%; padding: 16px; background: #2563eb; color: #fff; border: none; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: 0.3s; }
+        .btn { width: 100%; padding: 16px; background: #2563eb; color: #fff; border: none; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; }
         .btn:disabled { background: #475569; cursor: not-allowed; }
-        #status { margin-top: 15px; font-size: 13px; text-align: center; color: #38bdf8; }
+        #status { margin-top: 15px; font-size: 13px; text-align: center; color: #38bdf8; line-height: 1.5; }
         #result-area { margin-top: 20px; display: none; text-align: center; }
-        video { width: 100%; border-radius: 12px; margin-top: 10px; }
-        .btn-down { background: #10b981; margin-top: 12px; text-decoration: none; display: inline-block; padding: 12px; border-radius: 10px; color: #fff; font-weight: bold; width: 100%; }
+        video { width: 100%; border-radius: 12px; margin-top: 10px; max-height: 260px; background: #000; }
+        .btn-down { background: #10b981; margin-top: 12px; text-decoration: none; display: inline-block; padding: 14px; border-radius: 10px; color: #fff; font-weight: bold; width: 100%; }
     </style>
 </head>
 <body>
@@ -73,7 +73,7 @@ HTML_CONTENT = """
 
         <div id="result-area">
             <h3 style="font-size: 14px; color: #4ade80;">✅ Recap Video Ready!</h3>
-            <video id="previewPlayer" controls></video>
+            <video id="previewPlayer" controls playsinline></video>
             <a id="downBtn" class="btn-down" download="burmese_recap.mp4">📥 DOWNLOAD RECAP VIDEO</a>
         </div>
     </div>
@@ -100,7 +100,7 @@ HTML_CONTENT = """
             
             btn.disabled = true;
             btn.innerText = "⏳ Processing Video...";
-            status.innerText = "Generating Burmese Voice & Merging Video... (Please wait)";
+            status.innerText = "Generating Burmese narration & processing video... Please wait (about 15-30s).";
             resultArea.style.display = "none";
 
             const formData = new FormData();
@@ -113,18 +113,25 @@ HTML_CONTENT = """
                     body: formData
                 });
 
-                if (!response.ok) throw new Error("Server error: " + response.statusText);
+                if (!response.ok) {
+                    const errText = await response.text();
+                    throw new Error(errText || "Status code: " + response.status);
+                }
 
                 const blob = await response.blob();
                 const videoUrl = URL.createObjectURL(blob);
                 
-                document.getElementById('previewPlayer').src = videoUrl;
-                document.getElementById('downBtn').href = videoUrl;
+                const previewPlayer = document.getElementById('previewPlayer');
+                previewPlayer.src = videoUrl;
+                
+                const downBtn = document.getElementById('downBtn');
+                downBtn.href = videoUrl;
+                
                 resultArea.style.display = "block";
-                status.innerText = "Done successfully!";
+                status.innerText = "Done! Download or play below.";
             } catch (err) {
                 alert("Error: " + err.message);
-                status.innerText = "Failed: " + err.message;
+                status.innerText = "Error details: " + err.message;
             } finally {
                 btn.disabled = false;
                 btn.innerText = "🚀 START AUTO RECAP";
@@ -144,34 +151,52 @@ async def process_video(
     video: UploadFile = File(...),
     voice_name: str = Form("my-MM-ThihaNeural")
 ):
-    input_video_path = f"temp_{video.filename}"
-    audio_path = "output_voice.mp3"
-    output_video_path = f"burmese_recap_{video.filename}"
+    temp_dir = "/tmp/recap_work"
+    os.makedirs(temp_dir, exist_ok=True)
 
-    with open(input_video_path, "wb") as f:
-        f.write(await video.read())
+    safe_name = "".join(c for c in video.filename if c.isalnum() or c in "._-")
+    input_video_path = os.path.join(temp_dir, f"in_{safe_name}")
+    audio_path = os.path.join(temp_dir, "voice.mp3")
+    output_video_path = os.path.join(temp_dir, f"out_{safe_name}")
 
-    # မြန်မာအသံ ထုတ်ယူခြင်း
-    burmese_script = "မင်္ဂလာပါခင်ဗျာ။ ဒါကတော့ AI ကနေ အလိုအလျောက် မြန်မာဘာသာနဲ့ ရှင်းပြပေးထားတဲ့ Video Recap ဖြစ်ပါတယ်။"
-    tts = edge_tts.Communicate(burmese_script, voice_name)
-    await tts.save(audio_path)
+    try:
+        # Save video
+        with open(input_video_path, "wb") as buffer:
+            shutil.copyfileobj(video.file, buffer)
 
-    # Video + Audio ပေါင်းစပ်ခြင်း
-    video_clip = VideoFileClip(input_video_path)
-    audio_clip = AudioFileClip(audio_path)
+        # Generate Burmese TTS
+        burmese_script = "မင်္ဂလာပါခင်ဗျာ။ ဒါကတော့ AI ကနေ အလိုအလျောက် မြန်မာဘာသာနဲ့ ပြန်လည်ရှင်းပြပေးထားတဲ့ Video Recap ဖြစ်ပါတယ်။"
+        communicate = edge_tts.Communicate(burmese_script, voice_name)
+        await communicate.save(audio_path)
 
-    final_clip = video_clip.with_audio(audio_clip) if hasattr(video_clip, 'with_audio') else video_clip.set_audio(audio_clip)
-    final_clip.write_videofile(
-        output_video_path, 
-        codec="libx264", 
-        audio_codec="aac"
-    )
+        # Merge Audio & Video
+        video_clip = VideoFileClip(input_video_path)
+        audio_clip = AudioFileClip(audio_path)
 
-    video_clip.close()
-    audio_clip.close()
+        # Match audio duration or keep video intact
+        if hasattr(video_clip, 'with_audio'):
+            final_clip = video_clip.with_audio(audio_clip)
+        else:
+            final_clip = video_clip.set_audio(audio_clip)
 
-    return FileResponse(
-        path=output_video_path, 
-        filename=output_video_path, 
-        media_type="video/mp4"
-    )
+        final_clip.write_videofile(
+            output_video_path,
+            codec="libx264",
+            audio_codec="aac",
+            preset="ultrafast",
+            threads=2,
+            logger=None
+        )
+
+        video_clip.close()
+        audio_clip.close()
+
+        return FileResponse(
+            path=output_video_path,
+            filename=f"burmese_{safe_name}",
+            media_type="video/mp4"
+        )
+    except Exception as e:
+        error_msg = traceback.format_exc()
+        print("Error during video processing:", error_msg)
+        raise HTTPException(status_code=500, detail=str(e))
