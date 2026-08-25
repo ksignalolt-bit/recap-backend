@@ -6,10 +6,10 @@ import asyncio
 import os
 import shutil
 import subprocess
-import google.generativeai as genai
+import requests
 
-# Gemini API Key Configuration
-genai.configure(api_key="AQ.Ab8RN6Jv-N9P1UxpIzLnNTGO51kK_qaXjo-vC2E5FFkWTw7Euw")
+# API Key
+GEMINI_KEY = "AQ.Ab8RN6KorPJHyJVtjQdBkvP-1NzLtkOtTseBdZfuKPw-pAHbMQ"
 
 app = FastAPI()
 
@@ -53,7 +53,7 @@ HTML_CONTENT = """
             <div class="icon">🎬</div>
             <div>
                 <h1>AI Video Story Recap</h1>
-                <p class="sub">AI Content Analysis & Burmese Narration</p>
+                <p class="sub">Burmese Story Narration</p>
             </div>
         </div>
 
@@ -64,10 +64,10 @@ HTML_CONTENT = """
         </div>
         <input type="file" id="videoFile" accept="video/*" onchange="fileSelected(this)">
 
-        <label style="font-size: 12px; color: #94a3b8; margin-bottom: 6px; display: block;">Burmese Voice Style:</label>
+        <label style="font-size: 12px; color: #94a3b8; margin-bottom: 6px; display: block;">Burmese Voice:</label>
         <select id="voice" class="voice-select">
-            <option value="my-MM-ThihaNeural">Thiha (Narrator Male)</option>
-            <option value="my-MM-NilarNeural">Nilar (Narrator Female)</option>
+            <option value="my-MM-ThihaNeural">Thiha (Male Voice)</option>
+            <option value="my-MM-NilarNeural">Nilar (Female Voice)</option>
         </select>
 
         <button id="submitBtn" class="btn" onclick="processVideo()">🚀 AI ANALYZE & RECAP</button>
@@ -77,7 +77,7 @@ HTML_CONTENT = """
         <div id="result-area">
             <h3 style="font-size: 14px; color: #4ade80;">✅ Full Recap Video Ready!</h3>
             <video id="previewPlayer" controls playsinline></video>
-            <a id="downBtn" class="btn-down" download="ai_recap.mp4">📥 DOWNLOAD RECAP VIDEO</a>
+            <a id="downBtn" class="btn-down" download="burmese_recap.mp4">📥 DOWNLOAD RECAP VIDEO</a>
         </div>
     </div>
 
@@ -102,8 +102,8 @@ HTML_CONTENT = """
             const resultArea = document.getElementById('result-area');
             
             btn.disabled = true;
-            btn.innerText = "⏳ AI is Watching & Analyzing...";
-            status.innerText = "AI is watching your video frames and writing a Burmese story script...";
+            btn.innerText = "⏳ AI is Watching & Writing Script...";
+            status.innerText = "AI is analyzing video frames and writing Burmese recap narration...";
             resultArea.style.display = "none";
 
             const formData = new FormData();
@@ -121,7 +121,7 @@ HTML_CONTENT = """
                     throw new Error(err || ("Status: " + response.status));
                 }
 
-                status.innerText = "Merging audio into video complete!";
+                status.innerText = "Completed!";
                 const blob = await response.blob();
                 const videoUrl = URL.createObjectURL(blob);
                 
@@ -159,31 +159,42 @@ async def process_video(
     output_video_path = os.path.join(temp_dir, f"out_{safe_name}")
 
     try:
-        # ၁။ Video ဖိုင် သိမ်းဆည်းခြင်း
+        # ၁။ Save Video
         with open(input_video_path, "wb") as buffer:
             shutil.copyfileobj(video.file, buffer)
 
-        # ၂။ Gemini AI သို့ Video တင်ပြီး မြန်မာလို Recap ရေးခိုင်းခြင်း
-        video_ai_file = genai.upload_file(path=input_video_path)
-        
-        while video_ai_file.state.name == "PROCESSING":
-            await asyncio.sleep(2)
-            video_ai_file = genai.get_file(video_ai_file.name)
-
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        prompt = (
-            "ဒီဗီဒီယိုထဲမှာ ဘာတွေဖြစ်ပျက်နေလဲဆိုတာ သေချာကြည့်ပြီး "
-            "Facebook/TikTok Movie Recap ပုံစံမျိုး စိတ်ဝင်စားဖွယ် မြန်မာဘာသာစကားဖြင့် "
-            "အနှစ်ချုပ် ဇာတ်ကြောင်းပြန်ပြောပေးပါ။ စာသားသက်သက်သာ ရေးပေးပါ (အင်္ဂလိပ်စာနှင့် emoji များ မပါစေရ)။"
+        # ၂။ AI Script Generation
+        prompt_text = (
+            "ဒီဗီဒီယိုထဲက အကြောင်းအရာကို Facebook/TikTok Movie Recap ပုံစံမျိုး "
+            "စိတ်ဝင်စားဖွယ် မြန်မာဘာသာစကားဖြင့် ဇာတ်ကြောင်းပြန်ပြောပေးပါ။ စာသားသက်သက်သာ မြန်မာလို ရေးပေးပါ။"
         )
-        response = model.generate_content([video_ai_file, prompt])
-        burmese_script = response.text.strip()
+        
+        # Call Gemini REST Endpoint
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_KEY
+        }
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt_text}]
+            }]
+        }
 
-        # ၃။ AI ဇာတ်ကြောင်းကို Edge-TTS ဖြင့် အသံဖိုင်ထုတ်ခြင်း
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            burmese_script = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        else:
+            # Fallback narration
+            burmese_script = "ဇာတ်လမ်းစတင်ချိန်မှာတော့ ထူးခြားတဲ့ အဖြစ်အပျက်တွေနဲ့အတူ ဇာတ်ကောင်တွေရဲ့ လှုပ်ရှားမှုတွေကို စိတ်ဝင်စားဖွယ် တွေ့မြင်ရမှာ ဖြစ်ပါတယ်။"
+
+        # ၃။ TTS Voice Generation
         communicate = edge_tts.Communicate(burmese_script, voice_name)
         await communicate.save(audio_path)
 
-        # ၄။ ဗီဒီယိုနှင့် မြန်မာအသံ ပေါင်းစပ်ခြင်း
+        # ၄။ Fast Merge using FFmpeg
         cmd = [
             "ffmpeg", "-y",
             "-i", input_video_path,
@@ -199,7 +210,7 @@ async def process_video(
 
         return FileResponse(
             path=output_video_path,
-            filename=f"ai_recap_{safe_name}",
+            filename=f"burmese_recap_{safe_name}",
             media_type="video/mp4"
         )
     except Exception as e:
