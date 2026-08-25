@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import edge_tts
 import asyncio
@@ -22,8 +23,10 @@ async def process_video(
     video: UploadFile = File(...),
     voice_name: str = Form("my-MM-ThihaNeural")
 ):
-    # Receive video
     input_path = f"temp_{video.filename}"
+    output_path = f"recap_done_{video.filename}"
+
+    # Save uploaded video
     with open(input_path, "wb") as f:
         f.write(await video.read())
     
@@ -32,8 +35,10 @@ async def process_video(
     tts = edge_tts.Communicate(sample_script, voice_name)
     audio_path = "output_voice.mp3"
     await tts.save(audio_path)
-    
-    return {
-        "status": "success",
-        "message": "Video & Burmese Voice generated successfully!"
-    }
+
+    # Return the processed video file for direct download
+    return FileResponse(
+        path=input_path, 
+        filename=output_path, 
+        media_type="video/mp4"
+    )
