@@ -8,11 +8,14 @@ from moviepy import VideoFileClip, AudioFileClip
 
 app = FastAPI()
 
+# Enable all CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 @app.get("/")
@@ -26,18 +29,18 @@ async def process_video(
 ):
     input_video_path = f"temp_{video.filename}"
     audio_path = "output_voice.mp3"
-    output_video_path = f"merged_{video.filename}"
+    output_video_path = f"burmese_recap_{video.filename}"
 
-    # Save uploaded video
+    # 1. Save uploaded video
     with open(input_video_path, "wb") as f:
         f.write(await video.read())
 
-    # Generate Burmese Voice
+    # 2. Generate Burmese Voice
     burmese_script = "မင်္ဂလာပါခင်ဗျာ။ ဒါကတော့ AI ကနေ အလိုအလျောက် မြန်မာဘာသာနဲ့ ရှင်းပြပေးထားတဲ့ Video Recap ဖြစ်ပါတယ်။"
     tts = edge_tts.Communicate(burmese_script, voice_name)
     await tts.save(audio_path)
 
-    # Merge Video and Audio
+    # 3. Merge Video + Audio
     video_clip = VideoFileClip(input_video_path)
     audio_clip = AudioFileClip(audio_path)
 
@@ -45,7 +48,8 @@ async def process_video(
     final_clip.write_videofile(
         output_video_path, 
         codec="libx264", 
-        audio_codec="aac"
+        audio_codec="aac",
+        logger=None
     )
 
     video_clip.close()
@@ -53,6 +57,6 @@ async def process_video(
 
     return FileResponse(
         path=output_video_path, 
-        filename=f"burmese_recap_{video.filename}", 
+        filename=output_video_path, 
         media_type="video/mp4"
     )
