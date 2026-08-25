@@ -7,6 +7,8 @@ import os
 import shutil
 import subprocess
 import requests
+import base64
+import glob
 
 app = FastAPI()
 
@@ -36,11 +38,11 @@ HTML_CONTENT = """
         .upload-card { border: 2px dashed #475569; border-radius: 16px; padding: 26px 15px; text-align: center; background: #0f172a; cursor: pointer; margin-bottom: 16px; }
         input[type="file"] { display: none; }
         label { font-size: 12px; color: #94a3b8; margin-bottom: 6px; display: block; }
-        .input-box { width: 100%; padding: 12px; border-radius: 10px; background: #0f172a; color: #fff; border: 1px solid #475569; margin-bottom: 14px; font-size: 13px; }
-        textarea.input-box { resize: vertical; min-height: 60px; }
+        .input-box { width: 100%; padding: 12px; border-radius: 10px; background: #0f172a; color: #fff; border: 1px solid #475569; margin-bottom: 14px; font-size: 14px; }
         .btn { width: 100%; padding: 16px; background: #2563eb; color: #fff; border: none; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; }
         .btn:disabled { background: #475569; cursor: not-allowed; }
         #status { margin-top: 15px; font-size: 13px; text-align: center; color: #38bdf8; line-height: 1.5; }
+        #script-preview { margin-top: 15px; padding: 12px; background: #0f172a; border-radius: 10px; font-size: 12px; color: #cbd5e1; display: none; border-left: 4px solid #38bdf8; max-height: 140px; overflow-y: auto; text-align: left; }
         #result-area { margin-top: 20px; display: none; text-align: center; }
         video { width: 100%; border-radius: 12px; margin-top: 10px; max-height: 280px; background: #000; }
         .btn-down { background: #10b981; margin-top: 12px; text-decoration: none; display: inline-block; padding: 14px; border-radius: 10px; color: #fff; font-weight: bold; width: 100%; }
@@ -52,7 +54,7 @@ HTML_CONTENT = """
             <div class="icon">🎬</div>
             <div>
                 <h1>AI Video Story Recap</h1>
-                <p class="sub">Burmese Storytelling & Full Video Recapper</p>
+                <p class="sub">Vision Frame Analysis & Burmese Narration</p>
             </div>
         </div>
 
@@ -63,9 +65,6 @@ HTML_CONTENT = """
         </div>
         <input type="file" id="videoFile" accept="video/*" onchange="fileSelected(this)">
 
-        <label>Video Story/Topic (ရုပ်ရှင်ခေါင်းစဉ် သို့မဟုတ် အကြောင်းအရာ အကြမ်းဖျင်း - Optional):</label>
-        <textarea id="storyTopic" class="input-box" placeholder="ဥပမာ- ရုံးခန်းထဲက မိန်းကလေးတစ်ယောက်ရဲ့ ထူးဆန်းတဲ့ အဖြစ်အပျက် (မထည့်လဲ ရပါတယ်)"></textarea>
-
         <label>Burmese Voice:</label>
         <select id="voice" class="input-box">
             <option value="my-MM-ThihaNeural">Thiha (Narrator Male)</option>
@@ -75,11 +74,12 @@ HTML_CONTENT = """
         <button id="submitBtn" class="btn" onclick="processVideo()">🚀 AI ANALYZE & RECAP</button>
 
         <div id="status"></div>
+        <div id="script-preview"></div>
 
         <div id="result-area">
-            <h3 style="font-size: 14px; color: #4ade80;">✅ Full Video Recap Ready!</h3>
+            <h3 style="font-size: 14px; color: #4ade80;">✅ Full Recap Video Ready!</h3>
             <video id="previewPlayer" controls playsinline></video>
-            <a id="downBtn" class="btn-down" download="burmese_movie_recap.mp4">📥 DOWNLOAD RECAP VIDEO</a>
+            <a id="downBtn" class="btn-down" download="movie_recap.mp4">📥 DOWNLOAD RECAP VIDEO</a>
         </div>
     </div>
 
@@ -101,17 +101,18 @@ HTML_CONTENT = """
 
             const btn = document.getElementById('submitBtn');
             const status = document.getElementById('status');
+            const scriptPreview = document.getElementById('script-preview');
             const resultArea = document.getElementById('result-area');
             
             btn.disabled = true;
-            btn.innerText = "⏳ AI Analyzing & Generating...";
-            status.innerText = "Writing full Burmese storytelling recap and merging voice...";
+            btn.innerText = "⏳ AI Analyzing Video Scenes...";
+            status.innerText = "Extracting video scenes and generating Burmese storytelling recap...";
             resultArea.style.display = "none";
+            scriptPreview.style.display = "none";
 
             const formData = new FormData();
             formData.append("video", selectedFile);
             formData.append("voice_name", document.getElementById('voice').value);
-            formData.append("story_topic", document.getElementById('storyTopic').value);
 
             try {
                 const response = await fetch("/process-video", {
@@ -151,8 +152,7 @@ def read_root():
 @app.post("/process-video")
 async def process_video(
     video: UploadFile = File(...),
-    voice_name: str = Form("my-MM-ThihaNeural"),
-    story_topic: str = Form("")
+    voice_name: str = Form("my-MM-ThihaNeural")
 ):
     temp_dir = "/tmp/recap_work"
     os.makedirs(temp_dir, exist_ok=True)
@@ -163,42 +163,65 @@ async def process_video(
     output_video_path = os.path.join(temp_dir, f"out_{safe_name}")
 
     try:
-        # ၁။ Video ဖိုင် သိမ်းခြင်း
+        # ၁။ Save Video
         with open(input_video_path, "wb") as buffer:
             shutil.copyfileobj(video.file, buffer)
 
-        # ၂။ AI Story Recap Script Generator (Pollinations Free AI Engine)
-        topic_info = f"အကြောင်းအရာ- {story_topic}" if story_topic.strip() else "ဗီဒီယိုဇာတ်လမ်း"
-        system_prompt = (
-            f"သင်သည် နာမည်ကြီး Movie Recap / Storytelling ဖန်တီးသူတစ်ဦးဖြစ်သည်။ {topic_info} အတွက် "
-            "Facebook/TikTok တွင် ကြည့်ရှုသူ စိတ်ဝင်စားစေမည့် မြန်မာဘာသာစကားဖြင့် "
-            "အစ၊ အလယ်၊ အဆုံး ပြည့်စုံသော Movie Recap ဇာတ်ကြောင်းကို ရေးပေးပါ။ "
-            "စာလုံးရေ အနည်းဆုံး ၁၅၀ စကားလုံးခန့် ရှည်လျားပြီး နားထောင်ရ ကောင်းမွန်သော မြန်မာစာသားသက်သက်သာ ရေးပေးပါ (အင်္ဂလိပ်စာလုံးဝ မပါစေရ)။"
-        )
+        # ၂။ Extract Frame Images
+        frame_pattern = os.path.join(temp_dir, "frame_%d.jpg")
+        cmd_extract = [
+            "ffmpeg", "-y", "-i", input_video_path,
+            "-vf", "fps=1/5,scale=512:-1", "-vframes", "3",
+            frame_pattern
+        ]
+        subprocess.run(cmd_extract, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        try:
-            ai_url = f"https://text.pollinations.ai/{requests.utils.quote(system_prompt)}"
-            res = requests.get(ai_url, timeout=20)
-            if res.status_code == 200 and len(res.text.strip()) > 30:
-                burmese_script = res.text.strip()
-            else:
-                burmese_script = (
-                    "ဇာတ်လမ်းအစမှာတော့ အဓိကဇာတ်ကောင်ရဲ့ ထူးခြားဆန်းကြယ်တဲ့ လှုပ်ရှားမှုတွေနဲ့အတူ "
-                    "မထင်မှတ်ထားတဲ့ အပြောင်းအလဲတွေကို မြင်တွေ့ရမှာ ဖြစ်ပါတယ်။ အခြေအနေတွေ ရှုပ်ထွေးလာပြီးတဲ့နောက်မှာတော့ "
-                    "သူတို့ရင်ဆိုင်ကြုံတွေ့ရမယ့် အန္တရာယ်တွေနဲ့ အဖြေရှာပုံတွေကို စိတ်ဝင်စားဖွယ် ဆက်လက်ရှုစားရမှာ ဖြစ်ပါတယ်။"
-                )
-        except Exception:
+        # ၃။ AI Vision Model (Pollinations Vision API - Key မလိုဘဲ Frame ပုံကို တိုက်ရိုက် ကြည့်ရှုအကဲဖြတ်သည့် စနစ်)
+        frames = sorted(glob.glob(os.path.join(temp_dir, "frame_*.jpg")))
+        burmese_script = ""
+
+        if frames:
+            with open(frames[0], "rb") as img_file:
+                b64_img = base64.b64encode(img_file.read()).decode("utf-8")
+                
+            prompt = (
+                "Look at this video scene carefully. Describe what the person/character is doing, "
+                "their expression, action and story in exciting Burmese movie recap storytelling style. "
+                "Output Burmese text only. စိတ်ဝင်စားဖွယ် မြန်မာလို Movie Recap ဇာတ်ကြောင်း အစအဆုံး အသေးစိတ် ပြောပြပေးပါ။"
+            )
+            
+            try:
+                payload = {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+                            ]
+                        }
+                    ],
+                    "model": "openai"
+                }
+                res = requests.post("https://text.pollinations.ai/openai", json=payload, timeout=25)
+                if res.status_code == 200 and len(res.text.strip()) > 20:
+                    burmese_script = res.text.strip()
+            except Exception:
+                pass
+
+        if not burmese_script:
             burmese_script = (
-                "ဇာတ်လမ်းအစမှာတော့ အဓိကဇာတ်ကောင်ရဲ့ ထူးခြားဆန်းကြယ်တဲ့ လှုပ်ရှားမှုတွေနဲ့အတူ "
-                "မထင်မှတ်ထားတဲ့ အပြောင်းအလဲတွေကို မြင်တွေ့ရမှာ ဖြစ်ပါတယ်။ အခြေအနေတွေ ရှုပ်ထွေးလာပြီးတဲ့နောက်မှာတော့ "
-                "သူတို့ရင်ဆိုင်ကြုံတွေ့ရမယ့် အန္တရာယ်တွေနဲ့ အဖြေရှာပုံတွေကို စိတ်ဝင်စားဖွယ် ဆက်လက်ရှုစားရမှာ ဖြစ်ပါတယ်။"
+                "ဒီဗီဒီယိုထဲမှာတော့ ဇာတ်ကောင်ရဲ့ အမူအရာနဲ့ လှုပ်ရှားမှုတွေကနေတစ်ဆင့် "
+                "ထူးခြားတဲ့ အခြေအနေတစ်ခု ဖြစ်ပျက်နေတာကို တွေ့မြင်ရပါတယ်။ "
+                "ဇာတ်ကောင်ဟာ တစ်ခုခုကို စဉ်းစားဆုံးဖြတ်နေသလို အာရုံစိုက်လုပ်ဆောင်နေတာဖြစ်ပြီး "
+                "ရှေ့ဆက် ဘာတွေဆက်ဖြစ်မလဲဆိုတာ စိတ်ဝင်စားဖွယ် ဆက်လက်စောင့်ကြည့်ရမှာ ဖြစ်ပါတယ်။"
             )
 
-        # ၃။ Edge TTS ဖြင့် မြန်မာအသံဖိုင် ဖန်တီးခြင်း
+        # ၄။ Edge TTS Burmese Voice
         communicate = edge_tts.Communicate(burmese_script, voice_name)
         await communicate.save(audio_path)
 
-        # ၄။ မူရင်းဗီဒီယိုအရှည် အပြည့်အဝဖြင့် ပေါင်းစပ်ခြင်း
+        # ၅။ Merge Video & Voice (Full Video Duration)
         cmd_merge = [
             "ffmpeg", "-y",
             "-i", input_video_path,
@@ -213,7 +236,7 @@ async def process_video(
 
         return FileResponse(
             path=output_video_path,
-            filename=f"movie_recap_{safe_name}",
+            filename=f"burmese_recap_{safe_name}",
             media_type="video/mp4"
         )
     except Exception as e:
