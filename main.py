@@ -1,16 +1,14 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import google.generativeai as genai
-from PIL import Image
 import edge_tts
 import asyncio
 import os
 import shutil
 import subprocess
-import glob
 
-# Gemini AI Studio Key
+# Gemini API Key
 GEMINI_KEY = "AQ.Ab8RN6KgTVyaSRbAPIvnBHglR5vhTytORJTiL81XDB-sI5pKSA"
 genai.configure(api_key=GEMINI_KEY)
 
@@ -30,7 +28,7 @@ HTML_CONTENT = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Movie Recap (Burmese)</title>
+    <title>AI Movie Recap (Dialogue to Burmese)</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
         body { background: #0f172a; color: #f8fafc; display: flex; justify-content: center; padding: 20px 10px; }
@@ -47,7 +45,7 @@ HTML_CONTENT = """
 </head>
 <body>
     <div class="container">
-        <h2 style="margin-bottom: 15px;">🎬 AI Video Recap (Burmese)</h2>
+        <h2 style="margin-bottom: 15px;">🎬 AI Dialogue Recap (Burmese)</h2>
         <div class="upload-card" onclick="document.getElementById('videoFile').click()">
             <strong id="file-label">SELECT VIDEO FILE</strong>
         </div>
@@ -78,8 +76,8 @@ HTML_CONTENT = """
             const resultArea = document.getElementById('result-area');
             
             btn.disabled = true;
-            btn.innerText = "⏳ Gemini 1.5 Flash Analyzing...";
-            status.innerText = "Gemini is analyzing video frames and writing Burmese recap...";
+            btn.innerText = "⏳ Listening & Writing Recap...";
+            status.innerText = "Gemini is listening to video audio/dialogue and writing Burmese recap...";
             resultArea.style.display = "none";
 
             const formData = new FormData();
@@ -119,7 +117,8 @@ async def process_video(video: UploadFile = File(...)):
 
     safe_name = "".join(c for c in video.filename if c.isalnum() or c in "._-")
     input_video_path = os.path.join(temp_dir, f"in_{safe_name}")
-    audio_path = os.path.join(temp_dir, "voice.mp3")
+    extracted_audio_path = os.path.join(temp_dir, "input_dialogue.mp3")
+    burmese_audio_path = os.path.join(temp_dir, "burmese_voice.mp3")
     output_video_path = os.path.join(temp_dir, f"out_{safe_name}")
 
     try:
@@ -127,45 +126,41 @@ async def process_video(video: UploadFile = File(...)):
         with open(input_video_path, "wb") as buffer:
             shutil.copyfileobj(video.file, buffer)
 
-        # ၂။ Extract Frame Images
-        frame_pattern = os.path.join(temp_dir, "frame_%d.jpg")
-        cmd_extract = [
+        # ၂။ Extract Original Audio/Dialogue using FFmpeg
+        cmd_extract_audio = [
             "ffmpeg", "-y", "-i", input_video_path,
-            "-vf", "fps=1/3,scale=640:-1", "-vframes", "4",
-            frame_pattern
+            "-vn", "-acodec", "libmp3lame", "-b:a", "128k",
+            extracted_audio_path
         ]
-        subprocess.run(cmd_extract, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(cmd_extract_audio, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        image_files = sorted(glob.glob(os.path.join(temp_dir, "frame_*.jpg")))
-        if not image_files:
-            raise Exception("Cannot extract frames from video")
-
-        pil_images = [Image.open(f) for f in image_files]
-
-        # ၃။ Gemini 1.5 Flash Vision Call via Official SDK
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        # ၃။ Gemini Audio Understanding (နားထောင်ပြီး မြန်မာ Recap ရေးခိုင်းခြင်း)
+        audio_file_upload = genai.upload_file(path=extracted_audio_path)
+        
         prompt = (
-            "ဒီဗီဒီယိုကနေ ရိုက်ကူးထားတဲ့ ပုံရိပ်တွေကို သေချာကြည့်ပါ။ "
-            "ဗီဒီယိုထဲမှာပါတဲ့ လူတွေ၊ သူတို့ဘာလုပ်နေလဲ၊ အခြေအနေနဲ့ အဖြစ်အပျက်တွေကို အတိအကျ သုံးသပ်ပြီး "
-            "Facebook Movie Recap ပုံစံမျိုး မြန်မာစကားပြေဖြင့် စိတ်ဝင်စားဖွယ် ဇာတ်ကြောင်းပြန်ပြောပြပါ။ "
-            "အင်္ဂလိပ်စာလုံးဝ မပါစေရ။ မြန်မာစာသက်သက်သာ ရေးပေးပါ။"
+            "ဒီ audio ထဲမှာပါတဲ့ ဇာတ်ကောင်တွေ ပြောနေတဲ့ စကားပြောတွေ၊ အသံတွေနဲ့ အကြောင်းအရာကို သေချာနားထောင်ပါ။ "
+            "သူတို့ ဘာအကြောင်းပြောနေလဲ၊ ဘာအဓိပ္ပာယ်လဲဆိုတာကို နားလည်အောင် လုပ်ပြီး "
+            "စိတ်ဝင်စားစရာကောင်းတဲ့ Facebook/TikTok Movie Recap ဇာတ်ကြောင်းပြော ပုံစံမျိုးဖြင့် "
+            "မြန်မာဘာသာစကား သက်သက်ဖြင့် ရှင်းလင်း ပြန်ပြောပြပေးပါ။ "
+            "အင်္ဂလိပ်စာ လုံးဝ မပါစေရ။"
         )
 
-        response = model.generate_content([prompt] + pil_images)
+        model = genai.GenerativeModel("models/gemini-1.5-flash-latest")
+        response = model.generate_content([prompt, audio_file_upload])
         burmese_script = response.text.strip()
 
         if not burmese_script:
-            raise Exception("Gemini returned empty script")
+            raise Exception("AI could not generate recap from dialogue")
 
-        # ၄။ Edge-TTS Burmese Audio
+        # ၄။ Edge-TTS Burmese Narration
         communicate = edge_tts.Communicate(burmese_script, "my-MM-ThihaNeural")
-        await communicate.save(audio_path)
+        await communicate.save(burmese_audio_path)
 
-        # ၅။ Merge Video and Audio
+        # ၅။ Merge Video with new Burmese Narration
         cmd_merge = [
             "ffmpeg", "-y",
             "-i", input_video_path,
-            "-i", audio_path,
+            "-i", burmese_audio_path,
             "-c:v", "copy",
             "-c:a", "aac",
             "-map", "0:v:0",
